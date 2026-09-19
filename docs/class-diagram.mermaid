@@ -1,0 +1,188 @@
+%% 核心类图：mac-cleaner 后端领域模型
+%% 与 docs/ARCHITECTURE.md 第 3.1 节一致
+
+classDiagram
+    class Config {
+        +Path PROJECT_ROOT
+        +Path DATA_DIR
+        +Path DB_PATH
+        +Path AUDIT_LOG_PATH
+        +Path APP_LOG_PATH
+        +Path STATIC_DIR
+        +str HOME
+        +str HOST
+        +int DEFAULT_PORT
+        +str API_PREFIX
+        +int SCAN_TIMEOUT_SEC
+        +int HISTORY_DETAIL_KEEP
+        +str CONFIRM_TEXT
+        +dict DEFAULT_SETTINGS
+        +format_bytes(n) str
+        +now_iso() str
+    }
+
+    class CategoryDef {
+        +str id
+        +str name
+        +str group
+        +str desc
+        +str risk
+        +bool default_enabled
+        +bool default_selected
+        +bool privacy_sensitive
+        +bool needs_confirm_text
+        +bool keep_dir
+        +list roots
+        +dict match
+        +list blacklist_exceptions
+        +resolve_roots(home, sandbox_root) list
+    }
+
+    class CategoryRegistry {
+        -dict _by_id
+        +all() list
+        +get(cid) CategoryDef
+        +enabled(settings) list
+        +whitelist_roots(settings, home, sandbox_root) list
+        +probe_status(cid, home, sandbox_root) str
+    }
+
+    class ScanItem {
+        +str id
+        +str path
+        +str display
+        +str category_id
+        +int size
+        +str type
+        +float mtime
+        +float atime
+        +str risk
+        +bool in_home
+        +bool selected
+        +list flags
+        +to_dict() dict
+    }
+
+    class CategoryResult {
+        +str category_id
+        +str name
+        +str group
+        +str risk
+        +int size
+        +int item_count
+        +float percent
+        +str status
+        +list warnings
+        +list items
+    }
+
+    class Scanner {
+        -str _sandbox_root
+        -str _home
+        -int _concurrency
+        -int _timeout_sec
+        -Event _cancel
+        -dict _result
+        -dict _progress
+        +start(category_ids) str
+        +cancel() None
+        +progress() dict
+        +result() dict
+        -_scan_category(cat) CategoryResult
+        -_walk(root, cat) list
+        -_dir_size(path) int
+    }
+
+    class GateResult {
+        +bool ok
+        +str code
+        +str message
+        +str normalized_path
+    }
+
+    class SafetyGuard {
+        -list _blacklist
+        -list _sip_prefixes
+        -list _whitelist_roots
+        -str _home
+        -str _sandbox_root
+        -Callable _audit
+        +check(raw_path, category_id, skip_in_use) GateResult
+        +gate1_normalize(raw_path) GateResult
+        +gate2_whitelist(norm_path, category_id) GateResult
+        +gate3_blacklist(norm_path, category_id) GateResult
+        +gate4_sip(norm_path) GateResult
+        +gate5_in_use(norm_path) GateResult
+        +check_batch(paths, category_id, max_workers) dict
+        +check_limits(items, limits) GateResult
+    }
+
+    class Cleaner {
+        -SafetyGuard _guard
+        -Store _store
+        -dict _settings
+        -str _sandbox_root
+        -dict _previews
+        -dict _job
+        -Event _cancel
+        +preview(items, mode) dict
+        +execute(preview_token, mode, confirm_outside_home, confirm_text) str
+        +cancel() None
+        +progress() dict
+        -_apply_one(item, mode) dict
+        -_move_to_trash(path) None
+        -_delete_path(path) None
+    }
+
+    class Store {
+        -Connection _conn
+        -Lock _lock
+        -Path _db_path
+        +init_db() None
+        +list_history(limit, offset) dict
+        +get_history(hid) dict
+        +save_history(rec, items) int
+        +clear_history() None
+        +total_freed_bytes() int
+        +get_settings() dict
+        +save_settings(patch) dict
+        +audit(path, code, message) None
+        +log(level, msg) None
+    }
+
+    class ApiHandler {
+        -Scanner _scanner
+        -Cleaner _cleaner
+        -Store _store
+        -CategoryRegistry _registry
+        +handle_dispatch(method, path, body) tuple
+        +json_response(code, data, message) bytes
+        +serve_static(rel_path) tuple
+    }
+
+    class CleanServer {
+        -int port
+        +create(port) ThreadingHTTPServer
+        +serve_forever() None
+    }
+
+    CategoryRegistry "1" o-- "13" CategoryDef : 管理
+    Scanner ..> CategoryDef : 读取 roots
+    Scanner "1" *-- "n" ScanItem : 产出
+    Scanner "1" *-- "n" CategoryResult : 聚合
+    CategoryResult "1" o-- "n" ScanItem : 包含
+    Cleaner ..> SafetyGuard : 每条路径调用
+    Cleaner ..> ScanItem : 消费
+    Cleaner ..> Store : 写历史与审计
+    Cleaner ..> CategoryRegistry : 取白名单根
+    SafetyGuard "1" *-- "n" GateResult : 产出
+    SafetyGuard ..> CategoryRegistry : 取白名单根
+    ApiHandler --> Scanner : 持有单例
+    ApiHandler --> Cleaner : 持有单例
+    ApiHandler --> Store : 持有单例
+    ApiHandler --> CategoryRegistry : 持有单例
+    Store ..> Config : 路径常量
+    Scanner ..> Config : 路径常量
+    Cleaner ..> Config : 路径常量
+    SafetyGuard ..> Config : 路径常量
+    CleanServer --> ApiHandler : 请求分发

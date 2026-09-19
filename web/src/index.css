@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 少量全局样式：字体、滚动条与选中色 —— 其余交给 Tailwind 与 MUI */
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC',
+      'Microsoft YaHei', Roboto, sans-serif;
+  }
+
+  html.light {
+    color-scheme: light;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #3a3a3a transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::selection {
+    background: rgba(76, 141, 246, 0.35);
+  }
+
+  /* 数字类文本统一等宽，避免刷新时宽度跳动 */
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}

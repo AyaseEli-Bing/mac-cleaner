@@ -1,0 +1,25 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 运行时产物（架构 SYS-05：卸载即删项目目录，无系统残留）----
+data/*
+!data/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# ---- 前端 ----
+web/node_modules/
+web/dist/
+static/
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+.DS_Store
+*.swp

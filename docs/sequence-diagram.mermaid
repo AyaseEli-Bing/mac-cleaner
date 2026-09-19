@@ -1,0 +1,196 @@
+%% 扫描流程 + 清理执行流程（含五道安全关卡判定分支）
+%% 与 docs/ARCHITECTURE.md 第 5 节一致
+
+%% ============ (a) 扫描流程时序图 ============
+sequenceDiagram
+    autonumber
+    participant UI as React ScanPage
+    participant API as api.js
+    participant H as ApiHandler api.py
+    participant REG as CategoryRegistry
+    participant SC as Scanner
+    participant FS as FileSystem
+    participant ST as Store
+
+    UI->>API: startScan(categoryIds)
+    API->>H: POST /api/scan/start
+    H->>REG: enabled(settings)
+    REG-->>H: 启用的 CategoryDef 列表
+    H->>SC: start(category_ids)
+    SC->>SC: 置 cancel 事件清零，记录 started_at
+    SC-->>H: scan_id
+    H-->>API: code 0 + scan_id
+    API-->>UI: 进入扫描中状态，启动 1s 轮询
+
+    loop 每个类目（ThreadPoolExecutor 并发 4）
+        SC->>REG: resolve_roots(home, sandbox_root)
+        REG-->>SC: 展开后的绝对路径列表
+        SC->>FS: os.path.exists(root)
+        alt 根不存在
+            SC->>SC: CategoryResult.status = not_found
+        else 存在但无权限
+            SC->>FS: os.scandir(root)
+            FS-->>SC: PermissionError
+            SC->>SC: warnings += permission_denied + 授权引导文案
+        else 正常
+            loop 递归遍历目录树
+                SC->>FS: os.scandir(dir)
+                FS-->>SC: DirEntry 列表
+                SC->>FS: entry.stat(follow_symlinks=False)
+                alt 是符号链接
+                    SC->>SC: 按链接本身大小计，不递归
+                else 普通文件
+                    SC->>SC: size += st_size
+                else 目录
+                    SC->>SC: 入队继续下钻
+                end
+                SC->>SC: 每 200 项上报一次 progress
+            end
+            SC->>SC: 按 match 规则过滤（contains / size_age）
+            SC->>SC: 生成 ScanItem，id = sha1(path) 前16位
+        end
+        SC->>SC: 检查 cancel 事件或 timeout
+    end
+
+    UI->>API: 轮询 getScanProgress()
+    API->>H: GET /api/scan/progress
+    H->>SC: progress()
+    SC-->>H: scanned_dirs / scanned_bytes / found_bytes / percent / status
+    H-->>UI: 更新进度条与文案
+
+    UI->>API: getScanResult()
+    API->>H: GET /api/scan/result
+    H->>SC: result()
+    SC->>SC: 按 size 降序排序，计算各类 percent
+    SC-->>H: categories + totals
+    H->>ST: log(info, 扫描完成)
+    H-->>UI: 渲染类目手风琴与 Top5 排行
+
+    opt 用户点击停止扫描
+        UI->>API: cancelScan()
+        API->>H: POST /api/scan/cancel
+        H->>SC: cancel()
+        SC->>SC: 置 cancel 事件，工作线程下一检查点退出
+        SC-->>H: 保留已完成部分结果
+        H-->>UI: status = aborted，结果仍可展示与清理
+    end
+
+
+%% ============ (b) 清理执行流程时序图（五道安全关卡） ============
+sequenceDiagram
+    autonumber
+    participant UI as React ScanPage
+    participant API as api.js
+    participant H as ApiHandler api.py
+    participant CL as Cleaner
+    participant SG as SafetyGuard
+    participant REG as CategoryRegistry
+    participant FS as FileSystem
+    participant ST as Store
+
+    UI->>API: previewClean(itemIds, mode)
+    API->>H: POST /api/clean/preview
+    H->>CL: preview(items, mode)
+    CL->>SG: check_limits(items, limits)
+    alt 超过单次上限 SEC-09
+        SG-->>CL: limit_exceeded
+        CL-->>H: 2003 建议分批清理
+        H-->>UI: Snackbar 提示分批，预览中止
+    else 未超限
+        CL->>SG: check_batch(paths)
+        loop 每条路径
+            SG->>SG: gate1_normalize 规范化
+            alt G1 失败（空 / 根 / 穿越）
+                SG-->>CL: empty_path 或 root_path 或 path_traversal
+            else G1 通过
+                SG->>REG: whitelist_roots(settings)
+                SG->>SG: gate2_whitelist
+                alt G2 失败
+                    SG-->>CL: not_in_whitelist
+                else G2 通过
+                    SG->>SG: gate3_blacklist
+                    alt G3 命中黑名单
+                        SG-->>CL: blacklist
+                    else G3 通过
+                        SG->>SG: gate4_sip
+                        alt G4 命中 SIP 前缀
+                            SG-->>CL: sip
+                        else G4 通过
+                            SG->>FS: os.open 独占锁 或 access(W_OK)
+                            alt G5 被占用
+                                SG-->>CL: in_use
+                            else 五关全过
+                                SG-->>CL: ok
+                            end
+                        end
+                    end
+                end
+            end
+            SG->>ST: audit(path, code, message)
+        end
+        CL->>CL: 生成 preview_token 快照，TTL 10 分钟
+        CL-->>H: summary / blocked / top_paths / requires
+        H-->>UI: 弹出二次确认弹窗（N 项 / X GB / Top5 / 可恢复性）
+    end
+
+    UI->>UI: 勾选「我确认清理主目录外 / 高风险项」
+    UI->>UI: 高风险类目输入「确认删除」
+    UI->>API: executeClean(preview_token, mode, confirm_outside_home, confirm_text)
+    API->>H: POST /api/clean/execute
+    H->>CL: execute(...)
+    alt 含主目录外项且未确认
+        CL-->>H: 2002 CONFIRM_REQUIRED
+        H-->>UI: 开始清理按钮保持禁用
+    else 高危类目 confirm_text 不匹配
+        CL-->>H: 2002 CONFIRM_REQUIRED
+        H-->>UI: 提示确认文本不匹配
+    else 校验通过
+        CL->>CL: 生成 job_id，启动后台线程
+        CL-->>H: job_id
+        H-->>UI: 切到清理进度弹层，启动 1s 轮询
+
+        loop 逐条执行（单线程保序）
+            CL->>SG: check(path, category_id)
+            alt 任意关卡失败
+                SG-->>CL: 非 ok
+                CL->>CL: results += skipped + reason_code
+                CL->>ST: audit(path, code, message)
+            else 五关全过
+                alt mode = trash 默认
+                    CL->>FS: shutil.move 到 ~/.Trash 下唯一名
+                else mode = delete
+                    CL->>FS: keep_dir 则清内容保留目录，否则 rmtree 或 os.remove
+                end
+                alt 抛 OSError EBUSY
+                    FS-->>CL: OSError
+                    CL->>CL: results += skipped + in_use，不重试
+                else 成功
+                    CL->>CL: freed_bytes += size，success += 1
+                end
+            end
+            CL->>CL: processed += 1，更新 current_path
+            CL->>CL: 检查 cancel 事件
+        end
+
+        UI->>API: 轮询 getCleanProgress()
+        API->>H: GET /api/clean/progress
+        H->>CL: progress()
+        CL-->>H: processed / total / freed_bytes / success / skipped / failed / results
+        H-->>UI: 更新进度条与已释放字节数
+
+        opt 用户点击停止清理
+            UI->>API: cancelClean()
+            API->>H: POST /api/clean/cancel
+            H->>CL: cancel()
+            CL->>CL: 置 cancel 事件，当前项完成后退出循环
+            CL-->>UI: status = aborted
+        end
+
+        CL->>ST: save_history(rec, items) + 裁剪最近 5 次明细
+        ST-->>CL: history_id
+        CL-->>H: status = done 或 aborted
+        H-->>UI: 结果汇总弹层（成功 / 跳过 / 失败，失败原因可展开）
+        UI->>API: getDiskOverview + getHistory
+        API->>H: GET /api/disk/overview , GET /api/history
+        H-->>UI: 刷新磁盘总览与累计释放量
+    end
