@@ -1,5 +1,7 @@
 # Mac 清理助手（mac-cleaner）
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python](https://img.shields.io/badge/python-3.x-3776ab.svg) ![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg) ![Stack](https://img.shields.io/badge/stack-Python%20%2B%20React-61dafb.svg)
+
 > 一个本地运行的 macOS 磁盘清理工具：**先预览、再确认、可恢复**地清理系统缓存、日志、临时文件与废纸篓残留。
 > 后端纯 Python 3 标准库（零第三方依赖），前端 Vite + React，一条命令启动，只监听 `127.0.0.1`。
 
